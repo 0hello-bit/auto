@@ -240,9 +240,29 @@ def find_code(email: str, pattern: str, subject_keyword: str = "",
     rows = database.get_recent_messages(email, limit)
     subject_kws = _keyword_list(subject_keyword)
     from_kws = _keyword_list(from_keyword)
-    threshold = max(0, since - max(0, since_grace)) if since else 0
+    strict_threshold = max(0, since) if since else 0
+    fallback_threshold = max(0, since - max(0, since_grace)) if since else 0
     for row in rows:
-        if threshold and (row.get("created_at") or 0) < threshold:
+        # Prefer the message's own Date header over created_at. created_at is
+        # when Project A first fetched/stored the email; an old code can be
+        # fetched for the first time during a new attempt and would otherwise
+        # look fresh. If Date is missing/unparseable, fall back to created_at.
+        #
+        # The timeout-recovery grace is ONLY safe for created_at fallback. When
+        # message_ts exists, widening the threshold can re-admit an actually old
+        # OpenAI code that arrived shortly before the new send click.
+        message_ts = row.get("message_ts") or 0
+        if message_ts:
+            freshness_ts = message_ts
+            threshold = strict_threshold
+        else:
+            freshness_ts = row.get("created_at") or 0
+            threshold = fallback_threshold
+        if threshold and freshness_ts < threshold:
+            log.debug(
+                "skip stale code candidate for %s: message_ts=%s created_at=%s threshold=%s subject=%r",
+                email, row.get("message_ts"), row.get("created_at"), threshold, row.get("subject"),
+            )
             continue
         subject = (row.get("subject") or "").lower()
         from_addr = (row.get("from_addr") or "").lower()
