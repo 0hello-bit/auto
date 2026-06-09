@@ -1,0 +1,60 @@
+# Local secrets and live account pools
+**/.env
+**/.env.*
+!**/.env.example
+**/accounts.txt
+**/accounts_*.txt
+!**/accounts.example.txt
+**/emails.txt
+!**/emails.example.txt
+已有邮箱.txt
+
+# Runtime databases and generated state
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+**/data/*
+!**/data/.gitkeep
+
+# Runtime logs and browser automation artifacts
+**/logs/
+**/*.log
+**/screenshots/*
+!**/screenshots/.gitkeep
+**/traces/*
+!**/traces/.gitkeep
+**/*.zip
+
+# Local screenshots at repo root; keep generated desktop icons under icons/.
+/*.png
+/*.jpg
+/*.jpeg
+!/icons/*.png
+!/icons/*.ico
+
+# Local virtual environments and Python caches
+**/.venv/
+**/venv/
+**/env/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+build/
+dist/
+
+# Local backups and desktop artifacts
+*.bak-*
+*.lnk
+.claude/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

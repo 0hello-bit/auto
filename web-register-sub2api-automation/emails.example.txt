@@ -1,0 +1,13 @@
+# 邮箱池 / Email pool
+# 复制本文件为 emails.txt 后填入你自己拥有的邮箱，每行一个。
+# Copy this file to emails.txt and put ONE email address per line.
+#
+# - 以 # 开头的行会被忽略（注释）。Lines starting with # are ignored.
+# - 空行会被忽略。Blank lines are ignored.
+# - 这些邮箱必须是你自己拥有、并且已经接入项目 A（邮箱验证码服务）的邮箱。
+#   These must be your own mailboxes already wired into project A (mail-code service).
+#
+# 示例 / examples:
+test001@hotmail.com
+test002@hotmail.com
+test003@hotmail.com

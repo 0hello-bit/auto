@@ -1,0 +1,19 @@
+# secrets & local data (NEVER commit these)
+accounts.txt
+.env
+mail_codes.db
+mail_codes.db-wal
+mail_codes.db-shm
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/

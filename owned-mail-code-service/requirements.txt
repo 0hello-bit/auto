@@ -1,0 +1,10 @@
+# --- runtime ---
+fastapi>=0.110
+uvicorn[standard]>=0.27
+requests>=2.31
+python-dotenv>=1.0
+# pydantic v2 is pulled in by fastapi
+
+# --- tests ---
+pytest>=8.0
+httpx>=0.27

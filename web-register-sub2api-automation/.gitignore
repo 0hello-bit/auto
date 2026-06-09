@@ -1,0 +1,39 @@
+# ---- secrets & local config ----
+.env
+.env.*
+!.env.example
+emails.txt
+
+# ---- runtime data ----
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# ---- artifacts ----
+screenshots/*
+!screenshots/.gitkeep
+traces/*
+!traces/.gitkeep
+data/*
+!data/.gitkeep
+*.log
+logs/
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
