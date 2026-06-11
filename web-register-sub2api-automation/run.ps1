@@ -20,13 +20,11 @@ $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
 $venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
-$basePython = "D:\py\python.exe"
-if (-not (Test-Path $basePython)) { $basePython = "python" }
 
 if ($Setup) {
     Write-Host "==> Creating virtual environment (.venv)..." -ForegroundColor Cyan
     if (-not (Test-Path $venvPython)) {
-        & $basePython -m venv .venv
+        python -m venv .venv
     }
 
     Write-Host "==> Upgrading pip..." -ForegroundColor Cyan
@@ -62,6 +60,6 @@ if (Test-Path $venvPython) {
     & $venvPython -m app.main
 }
 else {
-    Write-Host "==> .venv not found; starting service with configured Python..." -ForegroundColor Yellow
-    & $basePython -m app.main
+    Write-Host "==> .venv not found; starting service with system python..." -ForegroundColor Yellow
+    python -m app.main
 }

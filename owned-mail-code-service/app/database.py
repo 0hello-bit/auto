@@ -9,7 +9,6 @@ import os
 import sqlite3
 import threading
 import time
-from email.utils import parsedate_to_datetime
 from typing import List, Optional
 
 from .config import settings
@@ -37,7 +36,6 @@ CREATE TABLE IF NOT EXISTS messages (
     body TEXT,
     html_body TEXT,
     date_raw TEXT,
-    message_ts INTEGER,
     code TEXT,
     created_at INTEGER NOT NULL,
     UNIQUE(email, message_id)
@@ -52,27 +50,6 @@ CREATE TABLE IF NOT EXISTS poll_status (
 CREATE INDEX IF NOT EXISTS idx_messages_email_created
     ON messages(email, created_at DESC, id DESC);
 """
-
-_MIGRATIONS = {
-    "messages": {
-        "message_ts": "INTEGER",
-    },
-}
-
-
-def _parse_message_ts(date_raw: str) -> int:
-    """Best-effort RFC822 Date header parser.
-
-    Returns 0 when the header is missing or unparsable. Callers can then fall
-    back to created_at, but freshness checks should prefer message_ts whenever
-    it exists so an old email first fetched today is not treated as a new code.
-    """
-    if not date_raw:
-        return 0
-    try:
-        return int(parsedate_to_datetime(date_raw).timestamp())
-    except Exception:
-        return 0
 
 
 def _connect() -> sqlite3.Connection:
@@ -91,41 +68,10 @@ def init_db() -> None:
         conn = _connect()
         try:
             conn.executescript(SCHEMA)
-            _migrate(conn)
-            _ensure_indexes(conn)
-            _backfill_message_ts(conn)
             conn.commit()
         finally:
             conn.close()
         log.info("database initialised at %s", settings.DB_FILE)
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    for table, columns in _MIGRATIONS.items():
-        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        for column, col_type in columns.items():
-            if column not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-
-
-def _ensure_indexes(conn: sqlite3.Connection) -> None:
-    # Created after migrations so existing databases get message_ts before this
-    # index references it.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_email_message_ts "
-        "ON messages(email, message_ts DESC, id DESC)"
-    )
-
-
-def _backfill_message_ts(conn: sqlite3.Connection) -> None:
-    rows = conn.execute(
-        "SELECT id, date_raw FROM messages "
-        "WHERE (message_ts IS NULL OR message_ts = 0) AND date_raw IS NOT NULL AND date_raw != ''"
-    ).fetchall()
-    for row in rows:
-        message_ts = _parse_message_ts(row["date_raw"])
-        if message_ts:
-            conn.execute("UPDATE messages SET message_ts=? WHERE id=?", (message_ts, row["id"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -227,11 +173,11 @@ def insert_message(email, message_id, from_addr, subject, body, html_body,
             """
             INSERT OR IGNORE INTO messages
                 (email, message_id, from_addr, subject, body, html_body,
-                 date_raw, message_ts, code, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 date_raw, code, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (email, message_id, from_addr, subject, body, html_body,
-             date_raw, _parse_message_ts(date_raw), code, int(time.time())),
+             date_raw, code, int(time.time())),
         )
         conn.commit()
         return cur.rowcount > 0

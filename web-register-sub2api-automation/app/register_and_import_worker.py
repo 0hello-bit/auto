@@ -47,7 +47,7 @@ async def run_register_and_import_job(
     try:
         async with browser_session(f"regimport_{register_job_id}", headless=headless) as context:
             # ---------------- registration phase ----------------
-            page_register = await context.new_page()
+            page_register = await register_worker.browser_manager.claim_page(context)
             try:
                 await perform_registration(
                     page_register,
@@ -79,6 +79,7 @@ async def run_register_and_import_job(
             try:
                 await perform_import(
                     context,
+                    page=page_register,
                     import_job_id=import_job_id,
                     register_job_id=register_job_id,
                     email=email,

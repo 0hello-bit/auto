@@ -21,32 +21,6 @@ def test_insert_message_dedup(tmp_db):
     assert len(rows) == 1
 
 
-def test_insert_message_parses_message_date(tmp_db):
-    database.insert_message(
-        "u@x.com", "mid-date", "f@x.com", "subj", "body", "",
-        "Tue, 09 Jun 2026 12:34:56 +0000", "123456",
-    )
-    row = database.get_recent_messages("u@x.com", 30)[0]
-    assert row["message_ts"] == 1781008496
-
-
-def test_init_db_backfills_existing_message_dates(tmp_db):
-    database.insert_message(
-        "u@x.com", "mid-backfill", "f@x.com", "subj", "body", "",
-        "Tue, 09 Jun 2026 12:34:56 +0000", "123456",
-    )
-    conn = database._connect()
-    try:
-        conn.execute("UPDATE messages SET message_ts=0")
-        conn.commit()
-    finally:
-        conn.close()
-
-    database.init_db()
-    row = database.get_recent_messages("u@x.com", 30)[0]
-    assert row["message_ts"] == 1781008496
-
-
 def test_account_roundtrip_and_public_view_hides_secrets(tmp_db):
     database.upsert_account(Account("u@x.com", "secret-pass", "cid", "secret-rt"))
     public = database.list_accounts_public()

@@ -222,19 +222,19 @@ class FiveSimProvider(SmsProvider):
             })
         return candidates
 
-    def _filter_and_sort(self, candidates: List[dict], strategy: str) -> List[dict]:
-        def passes(c: dict) -> bool:
-            if c["operator"].lower() in self.exclude_operators:
-                return False
-            if (c["count"] or 0) < self.min_count:
-                return False
-            if (c["success_rate"] or 0) < self.min_success_rate:
-                return False
-            if self.max_price is not None and c["price"] is not None and c["price"] > self.max_price:
-                return False
-            return True
+    def _candidate_passes_filters(self, candidate: dict) -> bool:
+        if candidate["operator"].lower() in self.exclude_operators:
+            return False
+        if (candidate["count"] or 0) < self.min_count:
+            return False
+        if (candidate["success_rate"] or 0) < self.min_success_rate:
+            return False
+        if self.max_price is not None and candidate["price"] is not None and candidate["price"] > self.max_price:
+            return False
+        return True
 
-        filtered = [c for c in candidates if passes(c)]
+    def _filter_and_sort(self, candidates: List[dict], strategy: str) -> List[dict]:
+        filtered = [c for c in candidates if self._candidate_passes_filters(c)]
 
         def rate_key(c):
             return c["success_rate"] or 0
@@ -273,7 +273,20 @@ class FiveSimProvider(SmsProvider):
 
         if strategy == STRATEGY_MANUAL:
             chosen = next((c for c in candidates if c["operator"].lower() == self.operator.lower()), None)
-            selected = chosen or {"operator": self.operator, "price": None, "success_rate": None, "count": None}
+            if chosen and self._candidate_passes_filters(chosen):
+                selected = chosen
+            else:
+                fallback_operator = (self.operator_fallback or "any").strip() or "any"
+                fallback = next((c for c in candidates if c["operator"].lower() == fallback_operator.lower()), None)
+                if fallback and self._candidate_passes_filters(fallback):
+                    selected = fallback
+                else:
+                    selected = {
+                        "operator": fallback_operator if fallback_operator.lower() != self.operator.lower() else self.operator,
+                        "price": None,
+                        "success_rate": None,
+                        "count": None,
+                    }
         elif ranked:
             selected = ranked[0]
         else:
@@ -354,8 +367,6 @@ class FiveSimProvider(SmsProvider):
 
     def _resolve_operator(self) -> dict:
         """Return the operator dict to use for buying (manual or auto)."""
-        if self.strategy == STRATEGY_MANUAL:
-            return {"operator": self.operator or "any", "price": None, "success_rate": None}
         try:
             result = self.select_best_operator(self.country, self.product, self.strategy)
             return result["selected"]
@@ -381,19 +392,32 @@ class FiveSimProvider(SmsProvider):
             log.info("5sim buying: country=%s operator=%s product=%s", self.country, op, self.product)
             return self._get(path, params=params or None)
 
-        # Try the chosen operator. For AUTO strategies, fall back to "any" if the
-        # picked operator has no stock. For MANUAL the user's exact operator is
-        # respected -- no silent fallback (so "virtual62" stays "virtual62").
+        # Try the chosen operator. If it has no stock, use the configured
+        # fallback operator. This lets a manual preference like virtual62 fall
+        # back to virtual34 without waiting for the outer retry loop to hit the
+        # same unavailable operator repeatedly. For auto strategies with no
+        # explicit fallback, the historical fallback remains "any".
         try:
             body = _do_buy(operator)
         except SmsError as exc:
             msg = str(exc).lower()
             stock_issue = ("no free phones" in msg or "out of stock" in msg or "no product" in msg)
-            if operator != "any" and self.strategy != STRATEGY_MANUAL and stock_issue:
-                log.warning("5sim operator=%s unavailable (%s); retrying operator=any", operator, str(exc)[:50])
-                operator = "any"
-                selected = {"operator": "any", "price": None, "success_rate": None}
-                body = _do_buy(operator)
+            fallback_operator = (self.operator_fallback or "any").strip() or "any"
+            if operator != "any" and fallback_operator.lower() != operator.lower() and stock_issue:
+                log.warning(
+                    "5sim operator=%s unavailable (%s); retrying operator=%s",
+                    operator, str(exc)[:50], fallback_operator,
+                )
+                first_exc = exc
+                operator = fallback_operator
+                selected = {"operator": fallback_operator, "price": None, "success_rate": None}
+                try:
+                    body = _do_buy(operator)
+                except SmsError as fallback_exc:
+                    raise SmsError(
+                        f"5sim buy failed on operator={selected['operator']} after "
+                        f"primary failed ({first_exc}); fallback failed ({fallback_exc})"
+                    ) from fallback_exc
             else:
                 raise
         if not isinstance(body, dict) or body.get("id") is None:

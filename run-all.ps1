@@ -6,7 +6,7 @@
       1. 项目专用 Chrome（CDP 9222，独立 profile）
       2. 项目 A：邮箱验证码服务 owned-mail-code-service (127.0.0.1:5050)
       3. 项目 B：网页注册 + Sub2API 导入 web-register-sub2api-automation (127.0.0.1:5060)
-      4. 检查 Sub2API (127.0.0.1:8080，需你本机已有服务监听)
+      4. 本机 Sub2API：先起 Redis(6379) 再起 sub2api.exe(127.0.0.1:8080，TIMEZONE=UTC)
 
     已在运行的组件不会重复启动（按端口判断）。项目 A / B 各开一个窗口显示日志。
 
@@ -18,8 +18,8 @@
     并行执行」的流式自动化批处理（POST /api/auto/run-batch）。
 
 .EXAMPLE
-    .\run-all.ps1            # 启动全部服务 / start everything
-    .\run-all.ps1 -Auto      # 启动服务 + 自动跑完整流程（流式并行邮箱）
+    .\run-all.ps1            # 启动全部服务
+    .\run-all.ps1 -Auto      # 启动服务 + 自动跑完整流程
     .\run-all.ps1 -Stop      # 关闭项目 A / B
 #>
 [CmdletBinding()]
@@ -29,10 +29,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# 让管道/输出按 UTF-8 处理，避免中文乱码 / keep output UTF-8.
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-# ---- 路径配置（按需修改）/ paths ----
+# ---- 路径配置（本机，自定位）/ paths ----
 $ROOT           = $PSScriptRoot
 $ROOT_A         = Join-Path $ROOT "owned-mail-code-service"
 $ROOT_B         = Join-Path $ROOT "web-register-sub2api-automation"
@@ -40,9 +39,29 @@ $CHROME         = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $CHROME_PROFILE = "D:\chrome-sub2api-automation-profile"
 $CDP_PORT       = 9222
 $SUB2API_DIR    = "C:\Users\24668\Documents\Codex\2026-06-05\wei-shaw-sub2api-https-github-com\work\sub2api-win"
+$REDIS_EXE      = "C:\Users\24668\Documents\Codex\2026-06-05\wei-shaw-sub2api-https-github-com\work\redis\Redis-8.8.0-Windows-x64-msys2\redis-server.exe"
+$PYTHON         = "C:\Users\24668\AppData\Local\Programs\Python\Python311\python.exe"
 $B_PORT         = 5060
 $A_PORT         = 5050
-$PYTHON         = "D:\py\python.exe"
+$CACHE_ROOT     = "F:\Cache"
+
+# Keep rebuildable caches off C:. This also applies to project A/B because
+# they are started as child processes from this script.
+$CACHE_PATHS = @{
+    TEMP                     = (Join-Path $CACHE_ROOT "Temp")
+    TMP                      = (Join-Path $CACHE_ROOT "Temp")
+    PIP_CACHE_DIR            = (Join-Path $CACHE_ROOT "pip")
+    npm_config_cache         = (Join-Path $CACHE_ROOT "npm-cache")
+    PLAYWRIGHT_BROWSERS_PATH = (Join-Path $CACHE_ROOT "ms-playwright")
+    XDG_CACHE_HOME           = (Join-Path $CACHE_ROOT "xdg")
+    UV_CACHE_DIR             = (Join-Path $CACHE_ROOT "uv")
+}
+foreach ($cachePath in ($CACHE_PATHS.Values | Select-Object -Unique)) {
+    New-Item -ItemType Directory -Force -Path $cachePath | Out-Null
+}
+foreach ($entry in $CACHE_PATHS.GetEnumerator()) {
+    Set-Item -Path ("Env:{0}" -f $entry.Key) -Value $entry.Value
+}
 
 function Test-Port([int]$port) {
     try {
@@ -61,7 +80,7 @@ function Venv-Python([string]$root) {
     return "python"
 }
 
-# 从 .env 读取某个 KEY 的值（用于 -Auto 调 API）/ read a KEY from a .env file.
+# 从 .env 读取某个 KEY 的值（用于 -Auto 调 API）.
 function Get-EnvValue([string]$path, [string]$key) {
     if (-not (Test-Path $path)) { return $null }
     foreach ($line in (Get-Content -LiteralPath $path)) {
@@ -74,7 +93,7 @@ function Get-EnvValue([string]$path, [string]$key) {
     return $null
 }
 
-# 调本机 API（绕过系统代理，兼容 PS5.1 / PS7）/ call a local API, bypassing proxy.
+# 调本机 API（绕过系统代理，兼容 PS5.1 / PS7）.
 function Invoke-LocalApi([string]$url, [string]$method, $headers, [string]$body) {
     $p = @{ Uri = $url; Method = $method; Headers = $headers; TimeoutSec = 120 }
     if ($body) { $p["Body"] = $body }
@@ -91,7 +110,7 @@ if ($Stop) {
             Write-Host ("    stop PID {0}" -f $_.ProcessId)
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
-    Write-Host "完成（Chrome 与 Sub2API 未关闭）/ done (Chrome and Sub2API left running)." -ForegroundColor Green
+    Write-Host "完成（Chrome 与 Sub2API 未关闭）。" -ForegroundColor Green
     return
 }
 
@@ -99,7 +118,7 @@ Write-Host "===== 一键启动 / Starting system =====" -ForegroundColor Cyan
 
 # ---- 1. Chrome (CDP) ----
 if (Test-Port $CDP_PORT) {
-    Write-Host "[1/4] Chrome CDP 已在 $CDP_PORT 运行，跳过 / already running." -ForegroundColor Green
+    Write-Host "[1/4] Chrome CDP 已在 $CDP_PORT 运行，跳过。" -ForegroundColor Green
 } elseif (-not (Test-Path $CHROME)) {
     Write-Warning ("[1/4] 找不到 Chrome: {0} —— 请修改脚本顶部的 CHROME 路径。" -f $CHROME)
 } else {
@@ -115,7 +134,7 @@ if (Test-Port $CDP_PORT) {
 
 # ---- 2. 项目 A：邮箱验证码服务 (5050) ----
 if (Test-Port $A_PORT) {
-    Write-Host "[2/4] 项目 A 已在 $A_PORT 运行，跳过 / already running." -ForegroundColor Green
+    Write-Host "[2/4] 项目 A 已在 $A_PORT 运行，跳过。" -ForegroundColor Green
 } elseif (-not (Test-Path $ROOT_A)) {
     Write-Warning ("[2/4] 找不到项目 A: {0}" -f $ROOT_A)
 } else {
@@ -129,7 +148,7 @@ if (Test-Port $A_PORT) {
 
 # ---- 3. 项目 B：注册 + 导入 (5060) ----
 if (Test-Port $B_PORT) {
-    Write-Host "[3/4] 项目 B 已在 $B_PORT 运行，跳过 / already running." -ForegroundColor Green
+    Write-Host "[3/4] 项目 B 已在 $B_PORT 运行，跳过。" -ForegroundColor Green
 } elseif (-not (Test-Path $ROOT_B)) {
     Write-Warning ("[3/4] 找不到项目 B: {0}" -f $ROOT_B)
 } else {
@@ -141,22 +160,35 @@ if (Test-Port $B_PORT) {
     )
 }
 
-# ---- 4. Sub2API (8080，local exe) ----
+# ---- 4. Sub2API (8080, 本机 exe) ----
 if (Test-Port 8080) {
-    Write-Host "[4/4] Sub2API 已在 8080 运行 / running." -ForegroundColor Green
+    Write-Host "[4/4] Sub2API 已在 8080 运行。" -ForegroundColor Green
 } else {
-    $sub2ApiExe = if ($SUB2API_DIR) { Join-Path $SUB2API_DIR "sub2api.exe" } else { "" }
-    if ($sub2ApiExe -and (Test-Path $sub2ApiExe)) {
-        Write-Warning ("[4/4] Sub2API 未运行。请双击桌面「启动 Codex Sub2API 中转站」，或执行: cd '{0}'; .\start_noproxy.bat" -f $SUB2API_DIR)
+    # 4a. Redis 必须先起，否则 sub2api auth 接口 fail-close 返回 429.
+    if (Test-Port 6379) {
+        Write-Host "[4/4] Redis 已在 6379 运行。" -ForegroundColor Green
+    } elseif (Test-Path $REDIS_EXE) {
+        Write-Host "[4/4] 启动 Redis (6379)..." -ForegroundColor Cyan
+        Start-Process -FilePath $REDIS_EXE -WorkingDirectory (Split-Path $REDIS_EXE -Parent) -WindowStyle Minimized
+        Start-Sleep -Seconds 2
     } else {
-        Write-Warning "[4/4] Sub2API 未运行。请先启动你本机的 Sub2API，并确认 127.0.0.1:8080 可访问。"
+        Write-Warning ("[4/4] 找不到 Redis: {0}" -f $REDIS_EXE)
+    }
+    # 4b. sub2api.exe —— 必须 TIMEZONE=UTC，否则启动秒崩 (invalid timezone Asia/Shanghai).
+    $sub2apiExe = Join-Path $SUB2API_DIR "sub2api.exe"
+    if (Test-Path $sub2apiExe) {
+        Write-Host "[4/4] 启动 Sub2API（TIMEZONE=UTC）..." -ForegroundColor Cyan
+        $env:TIMEZONE = "UTC"
+        Start-Process -FilePath $sub2apiExe -WorkingDirectory $SUB2API_DIR
+    } else {
+        Write-Warning ("[4/4] 找不到 sub2api.exe: {0} —— 请确认本机 Sub2API 路径。" -f $sub2apiExe)
     }
 }
 
 # ---- 健康自检 / health summary ----
-Write-Host "`n等待服务就绪 / waiting for services ..." -ForegroundColor Cyan
-foreach ($i in 1..30) {
-    if ((Test-Port $A_PORT) -and (Test-Port $B_PORT) -and (Test-Port $CDP_PORT)) { break }
+Write-Host "`n等待服务就绪 ..." -ForegroundColor Cyan
+foreach ($i in 1..40) {
+    if ((Test-Port $A_PORT) -and (Test-Port $B_PORT) -and (Test-Port $CDP_PORT) -and (Test-Port 8080)) { break }
     Start-Sleep -Seconds 1
 }
 Write-Host "`n===== 状态 / Status =====" -ForegroundColor Cyan
@@ -171,7 +203,7 @@ if (-not (Test-Port $B_PORT)) {
 
 # ---- 自动并行流式执行 / auto parallel streaming batch ----
 if ($Auto) {
-    Write-Host "`n===== 自动并行流式执行 / Auto parallel streaming batch =====" -ForegroundColor Cyan
+    Write-Host "`n===== 自动并行流式执行 =====" -ForegroundColor Cyan
     if (-not (Test-Port $B_PORT)) {
         Write-Warning "项目 B 未运行，无法启动自动化。请先排查 B 窗口日志。"
         return
@@ -209,7 +241,7 @@ if ($Auto) {
             }
         }
 
-        Write-Host ("==> 启动并行流式批处理（按邮箱顺序取号，最多 {0} 个邮箱同时执行）..." -f $parallelismLabel) -ForegroundColor Cyan
+        Write-Host ("==> 启动并行流式批处理（最多 {0} 个邮箱同时执行）..." -f $parallelismLabel) -ForegroundColor Cyan
         $body = $batchPayload | ConvertTo-Json
         $run = Invoke-LocalApi "$base/api/auto/run-batch" "Post" $headers $body
         $batchId = $run.data.batch_id
@@ -219,7 +251,6 @@ if ($Auto) {
         }
         Write-Host "    实时进度看「register-sub2api」窗口日志；或查询：" -ForegroundColor DarkGray
         Write-Host ("      irm '{0}/api/auto/batches/{1}' -Headers @{{ 'x-api-key'='{2}' }} | ConvertTo-Json -Depth 6" -f $base, $batchId, $apiKey) -ForegroundColor DarkGray
-        Write-Host ("      irm '{0}/api/emails' -Headers @{{ 'x-api-key'='{1}' }} | ConvertTo-Json -Depth 6" -f $base, $apiKey) -ForegroundColor DarkGray
     } catch {
         Write-Warning ("自动化调用失败: {0}" -f $_.Exception.Message)
     }

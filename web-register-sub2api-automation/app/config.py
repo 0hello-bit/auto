@@ -129,6 +129,7 @@ class Config:
     # browser mode: "playwright" (bundled Chromium) or "cdp" (local Chrome via CDP)
     browser_mode: str = field(default_factory=lambda: _get("BROWSER_MODE", "playwright").lower())
     cdp_endpoint: str = field(default_factory=lambda: _get("CDP_ENDPOINT", "http://127.0.0.1:9222"))
+    cdp_endpoints: List[str] = field(default_factory=lambda: _get_str_list("CDP_ENDPOINTS", _get("CDP_ENDPOINT", "http://127.0.0.1:9222")))
     cdp_context_policy: str = field(default_factory=lambda: _get("CDP_CONTEXT_POLICY", "incognito").lower())
     cdp_close_browser: bool = field(default_factory=lambda: _get_bool("CDP_CLOSE_BROWSER", False))
 
@@ -215,6 +216,13 @@ class Config:
     sub2api_default_group_ids: List[int] = field(default_factory=lambda: _get_int_list("SUB2API_DEFAULT_GROUP_IDS", "1"))
     sub2api_default_concurrency: int = field(default_factory=lambda: _get_int("SUB2API_DEFAULT_CONCURRENCY", 10))
     sub2api_default_priority: int = field(default_factory=lambda: _get_int("SUB2API_DEFAULT_PRIORITY", 1))
+    # Proxy assigned to newly-imported accounts. Without one, Sub2API forwards
+    # to chatgpt.com directly from this host's IP -> GFW/Cloudflare resets the
+    # stream ("wsarecv: forcibly closed"). Default 1 = the local Clash proxy.
+    # Set SUB2API_DEFAULT_PROXY_ID=0 (or negative) to import without a proxy.
+    sub2api_default_proxy_id: Optional[int] = field(default_factory=lambda: (
+        (lambda v: v if v > 0 else None)(_get_int("SUB2API_DEFAULT_PROXY_ID", 1))
+    ))
 
     # random identity
     min_age: int = field(default_factory=lambda: _get_int("MIN_AGE", 18))

@@ -45,6 +45,7 @@ class OAuthCallbackCapture:
         self.callback_url: Optional[str] = None
         self.captured: bool = False
         self.event: asyncio.Event = asyncio.Event()
+        self._attached_page_ids = set()
 
     def reset(self, expected_state: Optional[str] = None) -> None:
         """Re-arm the capture for a fresh OAuth flow (new state).
@@ -91,6 +92,10 @@ class OAuthCallbackCapture:
     # ------------------------------------------------------------------ #
     def attach_page(self, page) -> None:
         """Attach network listeners to a single page."""
+        page_id = id(page)
+        if page_id in self._attached_page_ids:
+            return
+        self._attached_page_ids.add(page_id)
         page.on("request", lambda request: self.consider(request.url))
         page.on("response", lambda response: self.consider(response.url))
         page.on("requestfailed", lambda request: self.consider(request.url))

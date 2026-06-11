@@ -4,13 +4,11 @@
 #
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
-$BasePython = "D:\py\python.exe"
-if (-not (Test-Path $BasePython)) { $BasePython = "python" }
 
 # 1. Create a virtual environment on first run.
 if (-not (Test-Path ".venv")) {
     Write-Host "Creating virtual environment (.venv)..." -ForegroundColor Cyan
-    & $BasePython -m venv .venv
+    python -m venv .venv
 }
 
 # 2. Activate it.
@@ -19,7 +17,7 @@ if (-not (Test-Path ".venv")) {
 # 3. Install dependencies.
 Write-Host "Installing dependencies..." -ForegroundColor Cyan
 python -m pip install --upgrade pip | Out-Null
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 
 # 4. Create .env from the example on first run.
 if (-not (Test-Path ".env")) {
@@ -36,4 +34,4 @@ foreach ($line in Get-Content ".env") {
 }
 
 Write-Host "Starting service on http://${bindHost}:${bindPort} ..." -ForegroundColor Green
-python -m uvicorn app.main:app --host $bindHost --port $bindPort
+uvicorn app.main:app --host $bindHost --port $bindPort

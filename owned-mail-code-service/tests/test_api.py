@@ -51,62 +51,6 @@ def test_code_returns_cached_match(client, api_headers):
     assert body["data"]["verification_code"] == "654321"
 
 
-def test_code_since_uses_message_date_not_first_seen_time(client, api_headers):
-    database.upsert_account(Account("fresh@hotmail.com", "p", "cid", "rt"))
-    # This stale code is inserted now, but the email Date is before the send
-    # timestamp. It must not be returned for the new verification attempt.
-    database.insert_message(
-        "fresh@hotmail.com", "old", "noreply@tm.openai.com",
-        "ChatGPT code 111111", "", "",
-        "Tue, 09 Jun 2026 12:00:00 +0000", "111111",
-    )
-    database.insert_message(
-        "fresh@hotmail.com", "new", "noreply@tm.openai.com",
-        "ChatGPT code 222222", "", "",
-        "Tue, 09 Jun 2026 12:10:00 +0000", "222222",
-    )
-
-    since = 1781006700  # Tue, 09 Jun 2026 12:05:00 +0000
-    resp = client.post("/api/code", headers=api_headers,
-                       json={"email": "fresh@hotmail.com", "timeout": 0,
-                             "pattern": r"\b\d{6}\b", "subject_keyword": "ChatGPT",
-                             "from_keyword": "openai", "since": since})
-    assert resp.status_code == 200
-    assert resp.json()["data"]["verification_code"] == "222222"
-
-
-def test_code_since_rejects_stale_message_even_if_recently_inserted(client, api_headers):
-    database.upsert_account(Account("stale@hotmail.com", "p", "cid", "rt"))
-    database.insert_message(
-        "stale@hotmail.com", "old", "noreply@tm.openai.com",
-        "ChatGPT code 111111", "", "",
-        "Tue, 09 Jun 2026 12:00:00 +0000", "111111",
-    )
-
-    since = 1781006700  # Tue, 09 Jun 2026 12:05:00 +0000
-    resp = client.post("/api/code", headers=api_headers,
-                       json={"email": "stale@hotmail.com", "timeout": 0,
-                             "pattern": r"\b\d{6}\b", "subject_keyword": "ChatGPT",
-                             "from_keyword": "openai", "since": since})
-    assert resp.status_code == 408
-
-
-def test_code_since_grace_does_not_reallow_stale_message_with_date(client, api_headers):
-    database.upsert_account(Account("grace@hotmail.com", "p", "cid", "rt"))
-    database.insert_message(
-        "grace@hotmail.com", "old", "noreply@tm.openai.com",
-        "ChatGPT code 111111", "", "",
-        "Tue, 09 Jun 2026 12:04:30 +0000", "111111",
-    )
-
-    since = 1781006700  # Tue, 09 Jun 2026 12:05:00 +0000
-    resp = client.post("/api/code", headers=api_headers,
-                       json={"email": "grace@hotmail.com", "timeout": 0,
-                             "pattern": r"\b\d{6}\b", "subject_keyword": "ChatGPT",
-                             "from_keyword": "openai", "since": since})
-    assert resp.status_code == 408
-
-
 def test_code_timeout(client, api_headers):
     database.upsert_account(Account("d@hotmail.com", "p", "cid", "rt"))
     # timeout=0 -> no polling occurs, immediate 408 (no network access needed).

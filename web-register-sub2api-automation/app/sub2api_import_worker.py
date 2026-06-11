@@ -26,10 +26,36 @@ from .sms_provider_factory import build_sms_provider
 
 log = logging.getLogger(__name__)
 
+_SMS_BUY_NUMBER_STOCK_RETRIES = 5
+_SMS_BUY_NUMBER_RETRY_DELAY_SECONDS = 2.0
+_SMS_STOCK_ERROR_KEYWORDS = ("no free phones", "out of stock", "no product")
+
 
 # --------------------------------------------------------------------------- #
 # finalizers / SMS order helpers
 # --------------------------------------------------------------------------- #
+def _is_sms_stock_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in _SMS_STOCK_ERROR_KEYWORDS)
+
+
+async def _buy_sms_number_with_stock_retries(sms_provider: SmsProvider, import_job_id: str) -> SmsOrder:
+    max_attempts = 1 + _SMS_BUY_NUMBER_STOCK_RETRIES
+    for buy_attempt in range(1, max_attempts + 1):
+        try:
+            return await asyncio.to_thread(sms_provider.buy_number)
+        except SmsError as exc:
+            if not _is_sms_stock_error(exc) or buy_attempt >= max_attempts:
+                raise
+            log.warning(
+                "[import %s] SMS number stock issue while buying (%d/%d): %s; retrying",
+                import_job_id, buy_attempt, max_attempts, str(exc)[:120],
+            )
+            await asyncio.sleep(_SMS_BUY_NUMBER_RETRY_DELAY_SECONDS)
+
+    raise SmsError("SMS number purchase failed without returning an order")
+
+
 def finalize_import_failure(
     import_job_id: str,
     register_job_id: Optional[str],
@@ -310,6 +336,19 @@ async def _go_back_to_phone(page, import_job_id: str) -> None:
         pass
 
 
+async def _return_to_phone_form(page, import_job_id: str, wait_secs: int = 8) -> bool:
+    """Return from the SMS-code page to the phone form and verify it worked."""
+    await _go_back_to_phone(page, import_job_id)
+    for _ in range(max(1, wait_secs)):
+        if await register_worker.is_present(page, config.phone_input_selector):
+            log.info("[import %s] returned to phone form for a new number", import_job_id)
+            return True
+        if await _is_ready_or_consent_page(page):
+            return False
+        await asyncio.sleep(1.0)
+    return await register_worker.is_present(page, config.phone_input_selector)
+
+
 async def _await_code_page(page, secs: int) -> bool:
     """Wait up to ``secs`` for the SMS-code input. False on error text or timeout."""
     for _ in range(max(1, secs)):
@@ -355,7 +394,7 @@ async def _select_phone_delivery(
             seen.add(cand)
             try:
                 loc = page.locator(cand).first
-                if await loc.count() > 0 and await loc.is_visible():
+                if await loc.count() > 0 and await loc.is_visible() and await loc.is_enabled():
                     await loc.click()
                     log.info("[import %s] selected phone delivery method: %s via %s", import_job_id, label, cand)
                     return True
@@ -404,6 +443,12 @@ _WHATSAPP_KEYWORDS = (
     "WhatsApp", "Whats App", "通过 WhatsApp", "WhatsApp 向该号码",
     "via WhatsApp", "through WhatsApp", "send a one-time code via WhatsApp",
 )
+_SMS_TO_WHATSAPP_FALLBACK_KEYWORDS = (
+    "无法向该电话号码发送短信", "无法发送短信", "不能发送短信",
+    "已切换为 WhatsApp", "切换为 WhatsApp", "继续通过 WhatsApp",
+    "can't send a text message", "cannot send a text message",
+    "switched to WhatsApp", "continue with WhatsApp",
+)
 
 
 async def _has_clickable_option(page, keywords) -> bool:
@@ -421,7 +466,7 @@ async def _has_clickable_option(page, keywords) -> bool:
         ):
             try:
                 loc = page.locator(sel).first
-                if await loc.count() > 0 and await loc.is_visible():
+                if await loc.count() > 0 and await loc.is_visible() and await loc.is_enabled():
                     return True
             except Exception:
                 continue
@@ -446,6 +491,11 @@ async def _detect_phone_delivery_mode(page) -> str:
     if await _page_has_any_text(page, _WHATSAPP_KEYWORDS):
         return "whatsapp_only"
     return "default"
+
+
+async def _is_sms_forced_to_whatsapp(page) -> bool:
+    """True when the page says SMS cannot be used and it switched to WhatsApp."""
+    return await _page_has_any_text(page, _SMS_TO_WHATSAPP_FALLBACK_KEYWORDS)
 
 
 # --------------------------------------------------------------------------- #
@@ -559,9 +609,7 @@ async def _wait_sms_or_callback(sms_provider, order, capture, timeout: int):
 
 
 class _RegenerateAuthUrl(Exception):
-    """Raised inside the phone step to ask the caller to reopen a FRESH Sub2API
-    auth_url and retry with a new number, instead of the fragile in-page
-    go_back rebuy (which often over-navigates out of the phone form)."""
+    """Raised when the OAuth flow itself must be restarted with a fresh auth_url."""
 
 
 async def _close_page_for_retry(page, import_job_id: str, reason: str):
@@ -569,20 +617,21 @@ async def _close_page_for_retry(page, import_job_id: str, reason: str):
         return None
     try:
         if not page.is_closed():
-            await page.close()
-            log.info("[import %s] closed OAuth page before retry (%s)", import_job_id, reason)
+            await page.goto("about:blank", wait_until="domcontentloaded", timeout=3000)
+            log.info("[import %s] reset OAuth page before retry (%s)", import_job_id, reason)
+            return page
     except Exception as exc:
-        log.warning("[import %s] could not close OAuth page before retry: %s", import_job_id, exc)
-    return None
+        log.warning("[import %s] could not reset OAuth page before retry: %s", import_job_id, exc)
+    return page
 
 
 async def _handle_phone_verification(page, *, import_job_id, register_job_id, sms_provider, capture):
-    """Phone verification: pick the country, buy ONE number, fill it, await the
-    SMS code, submit it. On ANY failure (number rejected / no code page / no SMS /
-    code rejected) cancel the order and raise :class:`_RegenerateAuthUrl` so the
-    caller reopens a fresh auth_url and tries a new number (bounded by
-    OAUTH_MAX_ATTEMPTS). Returns the SmsOrder on success, or None if no phone is
-    actually required (flow already advanced to ready/consent/callback)."""
+    """Phone verification.
+
+    Before the SMS-code page is reached, rejected / WhatsApp-routed numbers are
+    cancelled and retried on the same phone form. Once the SMS-code page is
+    reached, the existing SMS wait / code-submit recovery behavior is preserved.
+    """
     t = config.browser_timeout_ms
     attempts = max(1, config.sms_max_phone_attempts)
     # Resolve the country the number will be bought from (auto-picks the highest
@@ -625,7 +674,7 @@ async def _handle_phone_verification(page, *, import_job_id, register_job_id, sm
         country_info = await _select_phone_country(page, form_country, import_job_id)
 
         # 国家已经切到接码国家后，再购买订单。
-        order = await asyncio.to_thread(sms_provider.buy_number)
+        order = await _buy_sms_number_with_stock_retries(sms_provider, import_job_id)
         await _record_sms_order(import_job_id, register_job_id, order)
 
         phone_to_fill = _national_number(order.phone_number, (country_info or {}).get("dial"))
@@ -641,16 +690,21 @@ async def _handle_phone_verification(page, *, import_job_id, register_job_id, sm
             delivery_mode = await _detect_phone_delivery_mode(page)
         log.info("[import %s] phone delivery mode detected: %s", import_job_id, delivery_mode)
 
+        if await _is_sms_forced_to_whatsapp(page) and not config.phone_allow_whatsapp_fallback:
+            log.warning("[import %s] SMS was forced to WhatsApp; cancel + retry with a new number", import_job_id)
+            await _cancel_order_safe(sms_provider, order)
+            continue
+
         # WhatsApp-only page + the current SMS order can't receive WhatsApp:
-        # waiting for an SMS code would just time out, so cancel + new number
-        # WITHOUT ever calling sms_provider.wait_code.
+        # waiting for an SMS code would just time out. Stay on the phone form,
+        # cancel this number, and buy another one on the next loop iteration.
         if delivery_mode == "whatsapp_only" and not config.phone_allow_whatsapp_fallback:
             log.warning(
                 "[import %s] WhatsApp-only phone page but current SMS order does not "
-                "support WhatsApp; cancel + regenerate auth_url", import_job_id,
+                "support WhatsApp; cancel + retry with a new number", import_job_id,
             )
             await _cancel_order_safe(sms_provider, order)
-            raise _RegenerateAuthUrl("whatsapp-only page; SMS order cannot receive WhatsApp")
+            continue
 
         code_ready = False
         if delivery_mode == "selectable":
@@ -666,6 +720,14 @@ async def _handle_phone_verification(page, *, import_job_id, register_job_id, sm
                 keywords=("短信", "短消息", "文本消息", "SMS", "Text Message", "Text message"),
             )
             code_ready = await _submit_phone_and_wait_code_page(page, import_job_id, 8)
+            if (
+                not code_ready
+                and await _is_sms_forced_to_whatsapp(page)
+                and not config.phone_allow_whatsapp_fallback
+            ):
+                log.warning("[import %s] Text Message switched to WhatsApp; cancel + retry with a new number", import_job_id)
+                await _cancel_order_safe(sms_provider, order)
+                continue
             if (
                 not code_ready
                 and not capture.captured
@@ -708,26 +770,31 @@ async def _handle_phone_verification(page, *, import_job_id, register_job_id, sm
             await _click_proceed(page, import_job_id, 3000)
             return None
 
-        # 号码被直接拒绝，比如"号码已被验证过"。
+        # 号码被直接拒绝，比如"号码已被验证过"。还在手机号页时直接换号，
+        # 不重开 OAuth 授权链接。
         if await _page_has_any_text(page, config.phone_error_keywords):
-            log.warning("[import %s] number rejected at phone step; cancel + regenerate auth_url", import_job_id)
+            log.warning("[import %s] number rejected at phone step; cancel + retry with a new number", import_job_id)
             await _cancel_order_safe(sms_provider, order)
-            raise _RegenerateAuthUrl("number rejected")
+            continue
 
-        # 仍未进入验证码页面，则取消当前订单 + 重开授权链接换新号。
+        # 仍未进入验证码页面（常见：Text Message 不可用后页面切到 WhatsApp），
+        # 则取消当前订单，在当前手机号页继续买新号并重新选择 Text Message。
         if not code_ready:
-            log.warning("[import %s] code page not reached; cancel + regenerate auth_url", import_job_id)
+            log.warning("[import %s] code page not reached; cancel + retry with a new number", import_job_id)
             await _cancel_order_safe(sms_provider, order)
-            raise _RegenerateAuthUrl("code page not reached")
+            continue
 
         log.info("[import %s] waiting for SMS code (timeout=%ss)", import_job_id, config.sms_timeout_seconds)
         database.update_import_job(import_job_id, status="waiting_sms")
         try:
             sms_code = await _wait_sms_or_callback(sms_provider, order, capture, config.sms_timeout_seconds)
         except Exception as exc:
-            log.warning("[import %s] no SMS (%s); cancel + regenerate auth_url", import_job_id, str(exc)[:80])
+            log.warning("[import %s] no SMS (%s); cancel + go back for a new number", import_job_id, str(exc)[:80])
             await _cancel_order_safe(sms_provider, order)
-            raise _RegenerateAuthUrl("no SMS code in time")
+            if await _return_to_phone_form(page, import_job_id):
+                continue
+            log.warning("[import %s] could not return to phone form after SMS timeout; regenerate auth_url", import_job_id)
+            raise _RegenerateAuthUrl("no SMS code in time and back-to-phone failed")
         # Callback fired while waiting (e.g. user completed it manually) -> done.
         if sms_code is None or capture.captured:
             log.info("[import %s] OAuth callback captured while waiting for SMS; finishing", import_job_id)
@@ -763,6 +830,7 @@ async def _handle_phone_verification(page, *, import_job_id, register_job_id, sm
 async def perform_import(
     context,
     *,
+    page=None,
     import_job_id: str,
     register_job_id: Optional[str],
     email: Optional[str],
@@ -784,7 +852,7 @@ async def perform_import(
     ``fivesim`` carries optional 5sim overrides (country/product/operator/
     strategy/max_price) that take precedence over the .env defaults.
     """
-    page = None
+    page = page
     sms_provider: Optional[SmsProvider] = None
     sms_order: Optional[SmsOrder] = None
     fivesim = fivesim or {}
@@ -810,7 +878,9 @@ async def perform_import(
         oauth_max = max(1, config.oauth_max_attempts)
         for oauth_attempt in range(1, oauth_max + 1):
             if page is None or page.is_closed():
-                page = await context.new_page()
+                page = await browser_manager.claim_page(context)
+                capture.attach_page(page)
+            else:
                 capture.attach_page(page)
             if oauth_attempt == 1:
                 database.update_import_job(import_job_id, status="generating_auth_url", started_at=now())

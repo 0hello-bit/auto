@@ -43,6 +43,10 @@ _BIRTH_DATE_INPUT_SELECTOR = (
     'input[placeholder="生日日期"], input[placeholder*="生日"], input[aria-label*="生日"], '
     'input[name*="birth"], input[placeholder*="Birth"], input[aria-label*="Birth"], input[type="date"]'
 )
+_CHATGPT_APP_MARKERS = (
+    "新聊天", "搜索聊天", "库", "项目", "应用", "Codex",
+    "有问题，尽管问", "你在忙什么", "What can I help with",
+)
 
 
 def _append_selectors(selector: str, extra: str) -> str:
@@ -141,6 +145,39 @@ async def is_present(page, selector: str) -> bool:
     return False
 
 
+async def _page_has_any_text(page, keywords) -> bool:
+    try:
+        text = await page.locator("body").inner_text(timeout=2000)
+    except Exception:
+        return False
+    lower = text.lower()
+    return any(str(keyword).lower() in lower for keyword in keywords if keyword)
+
+
+async def _reset_if_logged_in_start(page, url: str, register_job_id: str) -> None:
+    """If the registration URL lands in an existing ChatGPT session, clear it."""
+    if not (await _page_has_any_text(page, _CHATGPT_APP_MARKERS)):
+        return
+    if await is_present(page, config.free_register_selector) or await is_present(page, config.email_input_selector):
+        return
+
+    log.warning("[register %s] registration URL landed in logged-in ChatGPT; clearing context and retrying", register_job_id)
+    try:
+        await browser_manager.reset_context_storage(page.context)
+    except Exception as exc:
+        log.warning("[register %s] context storage reset failed: %s", register_job_id, str(exc)[:120])
+    try:
+        await page.goto("about:blank", wait_until="domcontentloaded")
+    except Exception:
+        pass
+    await page.goto(url, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception:
+        pass
+    await asyncio.sleep(1.0)
+
+
 async def save_screenshot(page, job_id: str, label: str = "error") -> str:
     """Best-effort full-page screenshot. Returns the path or ``""``."""
     if page is None:
@@ -225,8 +262,18 @@ async def perform_registration(
     except Exception:
         pass
     await asyncio.sleep(1.0)
+    await _reset_if_logged_in_start(page, url, register_job_id)
 
     log.info("[register %s] click free-register", register_job_id)
+    if not await is_present(page, config.free_register_selector):
+        current_url = ""
+        try:
+            current_url = page.url
+        except Exception:
+            current_url = ""
+        raise PlaywrightStepError(
+            f"registration start page has no free-register button after reset (url={current_url})"
+        )
     await click_button(page, config.free_register_selector, t)
 
     # The 免费注册 click can be a no-op if the SPA hasn't attached its handler yet
@@ -357,7 +404,7 @@ async def run_register_job(
 ) -> None:
     try:
         async with browser_manager.browser_session(f"register_{job_id}", headless=headless) as context:
-            page = await context.new_page()
+            page = await browser_manager.claim_page(context)
             try:
                 await perform_registration(
                     page, register_job_id=job_id, url=url, email=email, name=name, age=age, code_timeout=code_timeout

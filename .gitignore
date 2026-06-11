@@ -1,41 +1,38 @@
-# Local secrets and live account pools
+# ---- local secrets / private runtime config ----
 **/.env
 **/.env.*
 !**/.env.example
-**/accounts.txt
-**/accounts_*.txt
-!**/accounts.example.txt
-**/emails.txt
-!**/emails.example.txt
-已有邮箱.txt
 
-# Runtime databases and generated state
-**/*.db
+# Outlook mailbox credentials / OAuth refresh tokens
+owned-mail-code-service/accounts*.txt*
+!owned-mail-code-service/accounts.example.txt
+
+# Local mailbox pool state
+web-register-sub2api-automation/emails.txt
+/已有邮箱.txt
+
+# ---- runtime data ----
+**/*.db*
 **/*.sqlite
 **/*.sqlite3
-**/*.db-journal
-**/*.db-wal
-**/*.db-shm
-**/data/*
-!**/data/.gitkeep
-
-# Runtime logs and browser automation artifacts
-**/logs/
+**/*.bundle
 **/*.log
-**/screenshots/*
-!**/screenshots/.gitkeep
-**/traces/*
-!**/traces/.gitkeep
-**/*.zip
+**/logs/
+*.bak
+*.bak-*
+*.friend-bak
+*.tmp
+*.old
+*.lnk
 
-# Local screenshots at repo root; keep generated desktop icons under icons/.
-/*.png
-/*.jpg
-/*.jpeg
-!/icons/*.png
-!/icons/*.ico
+web-register-sub2api-automation/data/*
+!web-register-sub2api-automation/data/.gitkeep
+web-register-sub2api-automation/screenshots/*
+!web-register-sub2api-automation/screenshots/.gitkeep
+web-register-sub2api-automation/traces/*
+!web-register-sub2api-automation/traces/.gitkeep
 
-# Local virtual environments and Python caches
+# ---- Python / tooling caches ----
 **/.venv/
 **/venv/
 **/env/
@@ -48,13 +45,14 @@
 build/
 dist/
 
-# Local backups and desktop artifacts
-*.bak-*
-*.lnk
+# ---- editor / OS ----
 .claude/
-
-# Editors and OS files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# local pasted screenshots / ad-hoc images at repo root
+/*.png
+/*.jpg
+/*.jpeg

@@ -195,6 +195,7 @@ def create_from_oauth(
     concurrency: Optional[int] = None,
     priority: Optional[int] = None,
     group_ids: Optional[Iterable[int]] = None,
+    proxy_id: Optional[int] = None,
 ) -> Tuple[Optional[int], Any]:
     """Exchange the OAuth code then create the OpenAI account.
 
@@ -217,13 +218,18 @@ def create_from_oauth(
         "priority": priority if priority is not None else config.sub2api_default_priority,
         "group_ids": list(group_ids) if group_ids is not None else list(config.sub2api_default_group_ids),
     }
+    # Attach a proxy so Sub2API doesn't forward to chatgpt.com directly (-> GFW reset).
+    effective_proxy_id = proxy_id if proxy_id is not None else config.sub2api_default_proxy_id
+    if effective_proxy_id is not None:
+        payload["proxy_id"] = effective_proxy_id
     body = _request("POST", "/api/v1/admin/accounts", json_body=payload)
     account_id = _pick(body, "id", "account_id", "accountId")
     try:
         account_id = int(account_id) if account_id is not None else None
     except (TypeError, ValueError):
         account_id = None
-    log.info("Sub2API account created (account_id=%s, group_ids=%s)", account_id, payload["group_ids"])
+    log.info("Sub2API account created (account_id=%s, group_ids=%s, proxy_id=%s)",
+             account_id, payload["group_ids"], effective_proxy_id)
     return account_id, body
 
 
